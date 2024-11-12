@@ -6,6 +6,8 @@ Register Here : [Carta Wallet](https://t.me/CartaWeb3Bot/taptoearncrew?startapp=
 ## Fitur
 
   - Auto Get Account Information
+  - Auto Claim Daily Check-In
+  - Auto Claim Refferal
   - Auto Clear Task
   - Multi Account
 
