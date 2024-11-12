@@ -1,7 +1,7 @@
 import requests
 import json
 import os
-from urllib.parse import parse_qs, unquote
+import urllib.parse
 from colorama import *
 from datetime import datetime
 import time
@@ -51,86 +51,18 @@ class CartaWallet:
         minutes, seconds = divmod(remainder, 60)
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
     
-    def extract_user_data(self, query: str) -> dict:
-        parsed_query = parse_qs(query)
-        user_data = parsed_query.get('user', [None])[0]
+    def load_data(self, query: str):
+        query_params = urllib.parse.parse_qs(query)
+        query = query_params.get('user', [None])[0]
 
-        if user_data:
-            user_json = json.loads(unquote(user_data))
-            return {
-                "first_name": user_json.get("first_name", "Unknown"),
-                "user_id": user_json.get("id")
-            }
-        return {"first_name": "Unknown", "user_id": None}
-
-    def load_tokens(self):
-        try:
-            if not os.path.exists('tokens.json'):
-                return {"accounts": []}
-
-            with open('tokens.json', 'r') as file:
-                data = json.load(file)
-                if "accounts" not in data:
-                    return {"accounts": []}
-                return data
-        except json.JSONDecodeError:
-            return {"accounts": []}
-
-    def save_tokens(self, tokens):
-        with open('tokens.json', 'w') as file:
-            json.dump(tokens, file, indent=4)
-
-    def generate_tokens(self, queries: list):
-        tokens_data = self.load_tokens()
-        accounts = tokens_data["accounts"]
-
-        for idx, query in enumerate(queries):
-            account_name = self.extract_user_data(query)["first_name"]
-
-            existing_account = next((acc for acc in accounts if acc["first_name"] == account_name), None)
-
-            if not existing_account:
-                print(
-                    f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
-                    f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
-                    f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
-                    f"{Fore.WHITE + Style.BRIGHT} {account_name} {Style.RESET_ALL}"
-                    f"{Fore.YELLOW + Style.BRIGHT}Token Is None{Style.RESET_ALL}"
-                    f"{Fore.MAGENTA + Style.BRIGHT} ] [{Style.RESET_ALL}"
-                    f"{Fore.YELLOW + Style.BRIGHT} Generating Token... {Style.RESET_ALL}"
-                    f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}",
-                    end="\r", flush=True
-                )
-                time.sleep(1)
-
-                token = self.user_auth(query)
-                if token:
-                    self.log(
-                        f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
-                        f"{Fore.WHITE + Style.BRIGHT} {account_name} {Style.RESET_ALL}"
-                        f"{Fore.MAGENTA + Style.BRIGHT}] [{Style.RESET_ALL}"
-                        f"{Fore.GREEN + Style.BRIGHT} Successfully Generated Token {Style.RESET_ALL}"
-                        f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}                           "
-                    )
-                    accounts.insert(idx, {"first_name": account_name, "token": token})
-                else:
-                    self.log(
-                        f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
-                        f"{Fore.WHITE + Style.BRIGHT} {account_name} {Style.RESET_ALL}"
-                        f"{Fore.YELLOW + Style.BRIGHT}Query Is Expired{Style.RESET_ALL}"
-                        f"{Fore.MAGENTA + Style.BRIGHT} ] [{Style.RESET_ALL}"
-                        f"{Fore.RED + Style.BRIGHT} Failed to Generate Token {Style.RESET_ALL}"
-                        f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}                           "
-                    )
-
-                time.sleep(1)
-                self.log(f"{Fore.CYAN + Style.BRIGHT}-{Style.RESET_ALL}" * 75)
-
-        self.save_tokens({"accounts": accounts})
-
-    def load_queries(self):
-        with open('query.txt', 'r') as file:
-            return [line.strip() for line in file if line.strip()]
+        if query:
+            user_data_json = urllib.parse.unquote(query)
+            user_data = json.loads(user_data_json)
+            account = user_data.get('first_name', 'Unknown')
+            user_id = user_data['id']
+            return account, user_id
+        else:
+            raise ValueError("User data not found in query.")
 
     def user_auth(self, query: str, retries=5):
         url = 'https://api-crewdrop.cartawallet.com/v1/graphql'
@@ -153,12 +85,10 @@ class CartaWallet:
         for attempt in range(retries):
             try:
                 response = self.session.post(url, headers=self.headers, data=data)
-                if response.status_code == 200:
-                    result = response.json()
-                    if result:
-                        return result['data']['authenticate']['accessToken']
-                    else:
-                        return None
+                response.raise_for_status()
+                result = response.json()
+                if result and result.get('data', None):
+                    return result['data']['authenticate']['accessToken']
                 else:
                     return None
             except (requests.RequestException, ValueError) as e:
@@ -208,12 +138,90 @@ class CartaWallet:
         for attempt in range(retries):
             try:
                 response = self.session.post(url, headers=self.headers, data=data)
-                if response.status_code == 200:
-                    result = response.json()
-                    if result:
-                        return result['data']['user']
-                    else:
-                        return None
+                response.raise_for_status()
+                result = response.json()
+                if result and result.get('data', None):
+                    return result['data']['user']
+                else:
+                    return None
+            except (requests.RequestException, ValueError) as e:
+                if attempt < retries - 1:
+                    print(
+                        f"{Fore.RED+Style.BRIGHT}HTTP ERROR{Style.RESET_ALL}"
+                        f"{Fore.YELLOW+Style.BRIGHT} Retrying... {Style.RESET_ALL}"
+                        f"{Fore.WHITE+Style.BRIGHT}[{attempt+1}/{retries}]{Style.RESET_ALL}",
+                        end="\r",
+                        flush=True
+                    )
+                    time.sleep(2)
+                else:
+                    return None
+                
+    def refferal(self, token: str, retries=5):
+        url = 'https://api-crewdrop.cartawallet.com/v1/graphql'
+        data = json.dumps({
+            "operationName": "getClaims",
+            "query": """query getClaims {
+                getClaims {
+                    turn
+                    point
+                    total24hReferrals
+                    totalReferrals
+                    canClaims
+                    nextClaimedAt
+                    __typename
+                }
+            }""",
+            "variables": {}
+        })
+        self.headers.update({
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'
+        })
+
+        for attempt in range(retries):
+            try:
+                response = self.session.post(url, headers=self.headers, data=data)
+                response.raise_for_status()
+                result = response.json()
+                if result and result.get('data', None):
+                    return result['data']['getClaims']
+                else:
+                    return None
+            except (requests.RequestException, ValueError) as e:
+                if attempt < retries - 1:
+                    print(
+                        f"{Fore.RED+Style.BRIGHT}HTTP ERROR{Style.RESET_ALL}"
+                        f"{Fore.YELLOW+Style.BRIGHT} Retrying... {Style.RESET_ALL}"
+                        f"{Fore.WHITE+Style.BRIGHT}[{attempt+1}/{retries}]{Style.RESET_ALL}",
+                        end="\r",
+                        flush=True
+                    )
+                    time.sleep(2)
+                else:
+                    return None
+                
+    def claim_reff(self, token: str, retries=5):
+        url = 'https://api-crewdrop.cartawallet.com/v1/graphql'
+        data = json.dumps({
+            "operationName": "claims",
+            "query": """mutation claims {
+                claims
+            }""",
+            "variables": {}
+        })
+        self.headers.update({
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'
+        })
+
+        for attempt in range(retries):
+            try:
+                response = self.session.post(url, headers=self.headers, data=data)
+                response.raise_for_status()
+                result = response.json()
+                if result and result.get('data', None):
+                    return result['data']
                 else:
                     return None
             except (requests.RequestException, ValueError) as e:
@@ -263,12 +271,10 @@ class CartaWallet:
         for attempt in range(retries):
             try:
                 response = self.session.post(url, headers=self.headers, data=data)
-                if response.status_code == 200:
-                    result = response.json()
-                    if result:
-                        return result['data']['tasks']
-                    else:
-                        return None
+                response.raise_for_status()
+                result = response.json()
+                if result and result.get('data', None):
+                    return result['data']['tasks']
                 else:
                     return None
             except (requests.RequestException, ValueError) as e:
@@ -304,12 +310,10 @@ class CartaWallet:
         for attempt in range(retries):
             try:
                 response = self.session.post(url, headers=self.headers, data=data)
-                if response.status_code == 200:
-                    result = response.json()
-                    if result:
-                        return result['data']['pushTaskAct']
-                    else:
-                        return None
+                response.raise_for_status()
+                result = response.json()
+                if result and result.get('data', None):
+                    return result['data']
                 else:
                     return None
             except (requests.RequestException, ValueError) as e:
@@ -345,12 +349,10 @@ class CartaWallet:
         for attempt in range(retries):
             try:
                 response = self.session.post(url, headers=self.headers, data=data)
-                if response.status_code == 200:
-                    result = response.json()
-                    if result:
-                        return result['data']['pushTaskAct']
-                    else:
-                        return None
+                response.raise_for_status()
+                result = response.json()
+                if result and result.get('data', None):
+                    return result['data']
                 else:
                     return None
             except (requests.RequestException, ValueError) as e:
@@ -367,45 +369,77 @@ class CartaWallet:
                     return None
         
     def process_query(self, query: str):
-        user_data = self.extract_user_data(query)
-        account_name = user_data["first_name"]
-        user_id = user_data["user_id"]
-
-        tokens_data = self.load_tokens()
-        accounts = tokens_data.get("accounts", [])
-
-        exist_account = next((acc for acc in accounts if acc["first_name"] == account_name), None)
-        if not exist_account:
+        account, user_id = self.load_data(query)
+        token = self.user_auth(query)
+        if not token:
             self.log(
-                f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
-                f"{Fore.WHITE + Style.BRIGHT} {account_name} {Style.RESET_ALL}"
-                f"{Fore.RED + Style.BRIGHT}Token Not Found in tokens.json{Style.RESET_ALL}"
-                f"{Fore.MAGENTA + Style.BRIGHT} ]{Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} ID {user_id} {Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT}Query Is May Expired{Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT} ]{Style.RESET_ALL}"
             )
             return
-
-        if exist_account and "token" in exist_account:
-            token = exist_account["token"]
-            
+        
+        if token:
             user = self.user_data(token, user_id)
-            if not user:
-                self.log(
-                    f"{Fore.MAGENTA+Style.BRIGHT}[ Account{Style.RESET_ALL}"
-                    f"{Fore.WHITE+Style.BRIGHT} {account_name} {Style.RESET_ALL}"
-                    f"{Fore.RED+Style.BRIGHT}Token Is Expired{Style.RESET_ALL}"
-                    f"{Fore.MAGENTA+Style.BRIGHT}] {Style.RESET_ALL}"
-                )
-
             if user:
                 self.log(
                     f"{Fore.MAGENTA+Style.BRIGHT}[ Account{Style.RESET_ALL}"
-                    f"{Fore.WHITE+Style.BRIGHT} {account_name} {Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {account} {Style.RESET_ALL}"
                     f"{Fore.MAGENTA+Style.BRIGHT}] [ Balance{Style.RESET_ALL}"
                     f"{Fore.WHITE+Style.BRIGHT} {user['balance']} $CREW {Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT}] [ Ticket{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {user['turn']} {Style.RESET_ALL}"
                     f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
                 )
                 time.sleep(1)
 
+                refferal = self.refferal(token)
+                if refferal and refferal['totalReferrals'] != 0:
+                    can_claim = refferal['canClaims']
+                    if can_claim:
+                        claim = self.claim_reff(token)
+                        if claim and claim['claims']:
+                            self.log(
+                                f"{Fore.MAGENTA+Style.BRIGHT}[ Refferal{Style.RESET_ALL}"
+                                f"{Fore.GREEN+Style.BRIGHT} Is Claimed {Style.RESET_ALL}"
+                                f"{Fore.MAGENTA+Style.BRIGHT}] [ Reward{Style.RESET_ALL}"
+                                f"{Fore.WHITE+Style.BRIGHT} {refferal['point']} $CREW {Style.RESET_ALL}"
+                                f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                                f"{Fore.WHITE+Style.BRIGHT} {refferal['turn']} Ticket {Style.RESET_ALL}"
+                                f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
+                            )
+                        else:
+                            self.log(
+                                f"{Fore.MAGENTA+Style.BRIGHT}[ Refferal{Style.RESET_ALL}"
+                                f"{Fore.RED+Style.BRIGHT} Isn't Claimed {Style.RESET_ALL}"
+                                f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
+                            )
+                    else:
+                        if refferal['turn'] == 0 and refferal['point'] == 0:
+                            self.log(
+                                f"{Fore.MAGENTA+Style.BRIGHT}[ Refferal{Style.RESET_ALL}"
+                                f"{Fore.YELLOW+Style.BRIGHT} No Available Reward to Claim {Style.RESET_ALL}"
+                                f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
+                            )
+                        else:
+                            next_claim_utc = datetime.strptime(refferal['nextClaimedAt'], '%Y-%m-%dT%H:%M:%S.%fZ')
+                            next_claim_wib = pytz.utc.localize(next_claim_utc).astimezone(wib).strftime('%x %X %Z')
+                            self.log(
+                                f"{Fore.MAGENTA+Style.BRIGHT}[ Refferal{Style.RESET_ALL}"
+                                f"{Fore.YELLOW+Style.BRIGHT} Not Time to Claim {Style.RESET_ALL}"
+                                f"{Fore.MAGENTA+Style.BRIGHT}] [ Next Claim at{Style.RESET_ALL}"
+                                f"{Fore.WHITE+Style.BRIGHT} {next_claim_wib} {Style.RESET_ALL}"
+                                f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
+                            )
+                else:
+                    self.log(
+                        f"{Fore.MAGENTA+Style.BRIGHT}[ Refferal{Style.RESET_ALL}"
+                        f"{Fore.YELLOW+Style.BRIGHT} Count Is None {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
+                    )
+                time.sleep(1)
+            
                 tasks = self.tasks(token)
                 if tasks:
                     for task in tasks:
@@ -415,26 +449,35 @@ class CartaWallet:
 
                         if task and status == 'start':
                             start = self.start_tasks(token, task_id)
-                            if start:
+                            if start and start['pushTaskAct']:
                                 self.log(
                                     f"{Fore.MAGENTA+Style.BRIGHT}[ Task{Style.RESET_ALL}"
                                     f"{Fore.WHITE+Style.BRIGHT} {task['name']} {Style.RESET_ALL}"
                                     f"{Fore.GREEN+Style.BRIGHT}Is Started{Style.RESET_ALL}"
-                                    f"{Fore.MAGENTA+Style.BRIGHT} ] [ Wait For{Style.RESET_ALL}"
-                                    f"{Fore.WHITE+Style.BRIGHT} {delay} Seconds to Claim Rewards {Style.RESET_ALL}"
-                                    f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
+                                    f"{Fore.MAGENTA+Style.BRIGHT} ]{Style.RESET_ALL}"
                                 )
-                                time.sleep(delay+1)
+                                for remaining in range(delay, 0, -1):
+                                    print(
+                                        f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+                                        f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+                                        f"{Fore.MAGENTA + Style.BRIGHT}[ Wait for{Style.RESET_ALL}"
+                                        f"{Fore.YELLOW + Style.BRIGHT} {remaining} {Style.RESET_ALL}"
+                                        f"{Fore.WHITE + Style.BRIGHT}Seconds to Claim Reward{Style.RESET_ALL}"
+                                        f"{Fore.MAGENTA + Style.BRIGHT} ]{Style.RESET_ALL}   ",
+                                        end="\r",
+                                        flush=True
+                                    )
+                                    time.sleep(1)
 
                                 claim = self.claim_tasks(token, task_id)
-                                if claim:
+                                if claim and claim['pushTaskAct']:
                                     self.log(
                                         f"{Fore.MAGENTA+Style.BRIGHT}[ Task{Style.RESET_ALL}"
                                         f"{Fore.WHITE+Style.BRIGHT} {task['name']} {Style.RESET_ALL}"
                                         f"{Fore.GREEN+Style.BRIGHT}Is Claimed{Style.RESET_ALL}"
                                         f"{Fore.MAGENTA+Style.BRIGHT} ] [ Reward{Style.RESET_ALL}"
                                         f"{Fore.WHITE+Style.BRIGHT} {task['point']} $CREW {Style.RESET_ALL}"
-                                        f"{Fore.MAGENTA+Style.BRIGHT} {task['point']} $CREW {Style.RESET_ALL}"
+                                        f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
                                         f"{Fore.WHITE+Style.BRIGHT} {task['turn']} Ticket {Style.RESET_ALL}"
                                         f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
                                     )
@@ -443,7 +486,7 @@ class CartaWallet:
                                         f"{Fore.MAGENTA+Style.BRIGHT}[ Task{Style.RESET_ALL}"
                                         f"{Fore.WHITE+Style.BRIGHT} {task['name']} {Style.RESET_ALL}"
                                         f"{Fore.RED+Style.BRIGHT}Isn't Claimed{Style.RESET_ALL}"
-                                        f"{Fore.MAGENTA+Style.BRIGHT} ]{Style.RESET_ALL}"
+                                        f"{Fore.MAGENTA+Style.BRIGHT} ]{Style.RESET_ALL}            "
                                     )
                                 time.sleep(1)
                             else:
@@ -457,14 +500,14 @@ class CartaWallet:
 
                         elif task and status == 'can_claim':
                             claim = self.claim_tasks(token, task_id)
-                            if claim:
+                            if claim and claim['pushTaskAct']:
                                 self.log(
                                     f"{Fore.MAGENTA+Style.BRIGHT}[ Task{Style.RESET_ALL}"
                                     f"{Fore.WHITE+Style.BRIGHT} {task['name']} {Style.RESET_ALL}"
                                     f"{Fore.GREEN+Style.BRIGHT}Is Claimed{Style.RESET_ALL}"
                                     f"{Fore.MAGENTA+Style.BRIGHT} ] [ Reward{Style.RESET_ALL}"
                                     f"{Fore.WHITE+Style.BRIGHT} {task['point']} $CREW {Style.RESET_ALL}"
-                                    f"{Fore.MAGENTA+Style.BRIGHT} {task['point']} $CREW {Style.RESET_ALL}"
+                                    f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
                                     f"{Fore.WHITE+Style.BRIGHT} {task['turn']} Ticket {Style.RESET_ALL}"
                                     f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
                                 )
@@ -490,12 +533,18 @@ class CartaWallet:
                         f"{Fore.GREEN+Style.BRIGHT} Is Completed {Style.RESET_ALL}"
                         f"{Fore.MAGENTA+Style.BRIGHT}]{Style.RESET_ALL}"
                     )
+            else:
+                self.log(
+                    f"{Fore.MAGENTA+Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {account} {Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT}Data Is None{Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT} ]{Style.RESET_ALL}"
+                )
                 
     def main(self):
-        self.clear_terminal()
         try:
-            queries = self.load_queries()
-            self.generate_tokens(queries)
+            with open('query.txt', 'r') as file:
+                queries = [line.strip() for line in file if line.strip()]
 
             while True:
                 self.clear_terminal()
@@ -507,12 +556,13 @@ class CartaWallet:
                 self.log(f"{Fore.CYAN + Style.BRIGHT}-{Style.RESET_ALL}"*75)
 
                 for query in queries:
+                    query = query.strip()
                     if query:
                         self.process_query(query)
                         self.log(f"{Fore.CYAN + Style.BRIGHT}-{Style.RESET_ALL}"*75)
                         time.sleep(3)
 
-                seconds = 60
+                seconds = 1800
                 while seconds > 0:
                     formatted_time = self.format_seconds(seconds)
                     print(
